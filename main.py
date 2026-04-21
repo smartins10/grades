@@ -29,48 +29,72 @@ class ESchoolingAutomation:
         
         # Removido o flet FilePicker por questões de compatibilidade com versões antigas
         
+    def __init__(self, page_ui: ft.Page):
+        self.page_ui = page_ui
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
+        
+        self.excel_data = None
+        self.should_process = False
+        
         self.btn_select_file = ft.ElevatedButton(
-            "Selecionar Excel",
+            "Selecionar Grelha Excel",
             on_click=self.on_file_selected
         )
         self.file_label = ft.Text("Nenhum arquivo selecionado")
         
         self.btn_open_portal = ft.ElevatedButton(
-            "1. Abrir Portal", 
+            "1. Abrir Portal eSchooling", 
             on_click=self.open_portal
         )
         
         self.btn_start_input = ft.ElevatedButton(
             "2. Iniciar Lançamento", 
-            on_click=self.start_input,
-            disabled=True
+            disabled=True,
+            on_click=self.start_input
         )
         
-        self.log_view = ft.ListView()
+        self.log_view = ft.ListView(expand=1, spacing=5, auto_scroll=True)
         
         self.setup_ui()
 
     def setup_ui(self):
-        self.page_ui.title = "eSchooling - Automação de Notas"
+        self.page_ui.title = "eSchooling - Lançamento Automático"
+        
         try:
             self.page_ui.window.width = 600
-            self.page_ui.window.height = 600
+            self.page_ui.window.height = 650
+            self.page_ui.window.position = ft.WindowPosition.CENTER
+    
         except:
             pass
 
         self.page_ui.add(
-            ft.Text("eSchooling Lançamento Automático", size=20),
+            ft.Text("eSchooling Lançamento Automático", size=24, color="blue"),
+            ft.Text("Automação profissional de lançamento de notas", size=14, color="grey"),
+            
             ft.Divider(),
+            
+            ft.Text("Passo 1: Seleção da Grelha", size=18, color="blue"),
+            ft.Text("A grelha (.xlsx) precisa conter 'Nome' e 'Nota' (ou 'Notas'). Opcional: 'Saber Fazer', 'Saber Ser'.", size=12, color="grey"),
             self.btn_select_file,
             self.file_label,
+            
             ft.Divider(),
+            
+            ft.Text("Passo 2: Execução da Automação", size=18, color="blue"),
+            ft.Text("Abra o portal, faça login, acesse a janela de notas e inicie o robô.", size=12, color="grey"),
             self.btn_open_portal,
             self.btn_start_input,
+            
             ft.Divider(),
-            ft.Text("Logs do Sistema"),
+            
+            ft.Text("Terminal de Logs", size=18, color="blue"),
             self.log_view
         )
-        self.log("ℹ️ Sistema iniciado. Por favor, selecione a planilha de notas (.xlsx).")
+        self.log("ℹ️ Sistema carregado. Ambiente pronto para operação.")
 
     def log(self, message):
         """Adiciona uma mensagem ao painel de log."""
@@ -88,7 +112,7 @@ class ESchoolingAutomation:
         root.attributes('-topmost', True)
         
         file_path = filedialog.askopenfilename(
-            title="Selecione a Planilha Excel",
+            title="Selecione a grelha Excel",
             filetypes=[("Arquivos Excel", "*.xlsx *.xls")]
         )
         root.destroy()
@@ -97,19 +121,35 @@ class ESchoolingAutomation:
             import os
             self.file_label.value = os.path.basename(file_path)
             try:
-                self.excel_data = pd.read_excel(file_path)
+                # Ler todas as folhas para procurar a correta (ex: 'Lançamento')
+                all_sheets = pd.read_excel(file_path, sheet_name=None)
                 
-                # Validação das colunas requeridas
-                required_cols = ['Nome', 'Nota']
-                missing = [col for col in required_cols if col not in self.excel_data.columns]
+                valid_df = None
+                found_sheet_name = ""
                 
-                if missing:
-                    self.log(f"❌ ERRO: A planilha deve conter as colunas exatas: 'Nome' e 'Nota'. Faltando: {missing}")
+                for sheet_name, df in all_sheets.items():
+                    has_nome = False
+                    has_nota = False
+                    for col in df.columns:
+                        col_norm = str(col).strip().lower()
+                        if col_norm in ["nome", "aluno", "nome do aluno", "nomes"]:
+                            has_nome = True
+                        if col_norm in ["nota", "notas", "nota final"]:
+                            has_nota = True
+                            
+                    if has_nome and has_nota:
+                        valid_df = df
+                        found_sheet_name = sheet_name
+                        break
+                
+                if valid_df is not None:
+                    self.excel_data = valid_df
+                    self.log(f"✅ Arquivo carregado (Folha '{found_sheet_name}'): {len(self.excel_data)} registros encontrados.")
+                    self.file_label.color = "green"
+                else:
+                    self.log(f"❌ ERRO: Nenhuma folha na grelha contém as colunas necessárias ('Nome' e 'Nota').")
                     self.excel_data = None
                     self.file_label.color = "red"
-                else:
-                    self.log(f"✅ Arquivo carregado: {len(self.excel_data)} registros encontrados.")
-                    self.file_label.color = "green"
                     
             except Exception as ex:
                 self.log(f"❌ Erro ao ler o arquivo: {str(ex)}")
@@ -208,17 +248,45 @@ class ESchoolingAutomation:
         error_count = 0
         
         for index, row in self.excel_data.iterrows():
-            if pd.isna(row.get('Nome')) or pd.isna(row.get('Nota')):
+            nome = ""
+            nota = ""
+            saber_fazer = ""
+            saber_ser = ""
+            
+            # Busca de colunas resiliente a espaços e diferenças de maiúsculas/minúsculas
+            for col in row.index:
+                col_norm = str(col).strip().lower()
+                val = row[col]
+                
+                if pd.isna(val):
+                    continue
+                    
+                val_str = str(val).strip()
+                if not val_str or val_str.lower() == 'nan':
+                    continue
+                    
+                if col_norm in ["nome", "aluno", "nome do aluno", "nomes"]:
+                    nome = val_str
+                elif col_norm in ["nota", "notas", "nota final"]:
+                    nota = val_str
+                    if nota.endswith('.0'):
+                        nota = nota[:-2]
+                elif "saber fazer" in col_norm:
+                    saber_fazer = val_str
+                elif "saber ser" in col_norm or "saber estar" in col_norm:
+                    saber_ser = val_str
+                    
+            if not nome: 
                 continue
                 
-            nome = str(row['Nome']).strip()
-            nota = str(row['Nota']).strip()
-            
-            # Formata notas do tipo 4.0 para 4 para casar com o label exato do select
-            if nota.endswith('.0'):
-                nota = nota[:-2]
-                
-            self.log(f"Processando: {nome} -> Nota a lançar: {nota}")
+            if not nota and not saber_fazer and not saber_ser:
+                continue
+
+            msg = f"Processando: {nome}"
+            if nota: msg += f" | Nota: {nota}"
+            if saber_fazer: msg += f" | Saber Fazer: {saber_fazer}"
+            if saber_ser: msg += f" | Saber Ser: {saber_ser}"
+            self.log(msg)
             
             try:
                 # 1. Localização do Aluno: localizar a célula <td> que contém o nome exato
@@ -229,27 +297,61 @@ class ESchoolingAutomation:
                     error_count += 1
                     continue
                 
-                # 2. Navegação na Tabela: subir para a linha pai (<tr>)
+                # 2. Navegação na Tabela: subir para a linha pai (<tr>) principal do aluno
                 tr_locator = td_locator.first.locator("xpath=ancestor::tr[1]")
                 
-                # Procurar o elemento <select> cujo atributo id termina com _ddFinalValue
-                select_locator = tr_locator.locator("css=select[id$='_ddFinalValue']")
+                # 3. Preenchimento: Nota Principal
+                if nota:
+                    select_locator = tr_locator.locator("css=select[id$='_ddFinalValue']")
+                    if select_locator.count() > 0:
+                        select_locator.first.select_option(label=nota)
+                        self.log(f"  ✅ Nota {nota} lançada com sucesso.")
+                    else:
+                        self.log(f"  ⚠️ Aviso: Dropdown de nota principal não encontrado.")
                 
-                if select_locator.count() == 0:
-                    self.log(f"  ❌ Falha: Dropdown de nota não encontrado para o aluno.")
-                    error_count += 1
-                    continue
+                # 4. Preenchimento: Saber Fazer
+                if saber_fazer:
+                    saber_fazer_upper = saber_fazer.upper()
+                    sf_span = tr_locator.locator("span", has_text="saber fazer")
+                    
+                    if sf_span.count() > 0:
+                        sf_select = sf_span.first.locator("xpath=ancestor::tr[1]//select")
+                        if sf_select.count() > 0:
+                            try:
+                                sf_select.first.select_option(label=saber_fazer_upper)
+                                self.log(f"  ✅ Saber Fazer '{saber_fazer_upper}' lançado com sucesso.")
+                            except Exception as e:
+                                self.log(f"  ❌ Erro ao selecionar '{saber_fazer_upper}' no Saber Fazer. Valor existe na lista?")
+                        else:
+                            self.log(f"  ⚠️ Aviso: Dropdown de 'Saber Fazer' não encontrado na linha.")
+                    else:
+                        self.log(f"  ⚠️ Aviso: Texto 'Saber fazer' não encontrado para este aluno.")
+                        
+                # 5. Preenchimento: Saber Ser
+                if saber_ser:
+                    saber_ser_upper = saber_ser.upper()
+                    ss_span = tr_locator.locator("span", has_text="saber estar")
+                    
+                    if ss_span.count() > 0:
+                        ss_select = ss_span.first.locator("xpath=ancestor::tr[1]//select")
+                        if ss_select.count() > 0:
+                            try:
+                                ss_select.first.select_option(label=saber_ser_upper)
+                                self.log(f"  ✅ Saber Ser '{saber_ser_upper}' lançado com sucesso.")
+                            except Exception as e:
+                                self.log(f"  ❌ Erro ao selecionar '{saber_ser_upper}' no Saber Ser. Valor existe na lista?")
+                        else:
+                            self.log(f"  ⚠️ Aviso: Dropdown de 'Saber Ser' não encontrado na linha.")
+                    else:
+                        self.log(f"  ⚠️ Aviso: Texto 'Saber estar' não encontrado para este aluno.")
                 
-                # 3. Preenchimento: selecionar o valor pela label
-                select_locator.first.select_option(label=nota)
-                self.log(f"  ✅ Nota {nota} lançada com sucesso para {nome}")
                 success_count += 1
                 
-                # Pequena pausa visual (opcional)
+                # Pequena pausa visual
                 popup_page.wait_for_timeout(100)
                 
             except Exception as e:
-                self.log(f"  ❌ Erro ao lançar nota para {nome}: {str(e)}")
+                self.log(f"  ❌ Erro geral ao lançar dados para {nome}: {str(e)}")
                 error_count += 1
                 
         self.log("--- 🏁 Concluído ---")
